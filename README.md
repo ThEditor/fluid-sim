@@ -7,40 +7,38 @@ This project implements a 2D fluid simulation using two parallel approaches:
 
 ## Prerequisites
 
-- **MPI Version**: MPI library (e.g. Open MPI), OpenGL, and GLUT.
-- **OpenMP Version**: A C++ compiler with OpenMP support, OpenGL, and GLUT.
+Before running `make all`, ensure you have the following packages installed:
+
+- **MPI:** Open MPI (e.g. `openmpi-bin` and `libopenmpi-dev` on Ubuntu)
+- **OpenGL:** OpenGL development libraries (e.g. `libgl1-mesa-dev`)
+- **GLUT:** GLUT development libraries (e.g. `freeglut3-dev`)
+- **C++ Compiler:** A C++ compiler with OpenMP support (e.g. `g++`)
 
 ## Building
 
+Compile project:
+
+```sh
+make all
+```
+
 ### MPI Version
-
-Compile with an MPI C++ compiler. For example:
-
-```sh
-mpic++ openmpi/fluid_box.cpp -lGL -lGLU -lglut -lm -o fluid_box_mpi
-```
-
-Run the simulation with at least 2 processes:
-
-```sh
-mpirun -np 4 ./fluid_sim_mpi
-```
-
-### OpenMP Version
-
-Compile with OpenMP enabled. For example:
-
-```sh
-g++ -fopenmp openmp/fluid_box.cpp -lGL -lGLU -lglut -lm -o fluid_box_omp
-```
 
 Run the simulation:
 
 ```sh
-./fluid_sim_omp [num_threads]
+mpirun -np 4 ./out/fluid_sim_mpi
 ```
+(The argument `4` specifies the number of threads to use.)
 
-(The optional argument `[num_threads]` specifies the number of threads to use.)
+### OpenMP Version
+
+Run the simulation:
+
+```sh
+./out/fluid_sim_omp 4
+```
+(The argument `4` specifies the number of threads to use.)
 
 ## Usage
 

@@ -12,6 +12,8 @@
 #include <sys/resource.h>
 #include <deque>
 #include <numeric>
+#include <random>
+#include <chrono>
 
 #define N 512                          // resolution
 #define IX(i, j) ((i) + (N + 2) * (j)) // 2D indexing
@@ -47,6 +49,34 @@ static double averageFPS = 0.0;
 static double cpuUsage = 0.0;
 static struct rusage lastRUsage;
 static struct timeval lastCpuCheck;
+
+// Benchmark mode variables
+static bool benchmarkMode = false;
+static int benchmarkDuration = 30; // seconds
+static double benchmarkStartTime = 0;
+static double totalFPS = 0;
+static int frameCount = 0;
+static double totalCPU = 0;
+static int cpuReadingCount = 0;
+
+// Random source variables
+static bool useRandomSources = false;
+static std::mt19937 rng;
+static int sourceInterval = 5; // Add a new source every 5 frames
+static int frameCounter = 0;
+
+// Source management variables
+static const int MAX_SOURCES = 20;
+static struct FluidSource
+{
+  int i, j;
+  float density;
+  float velocityX, velocityY;
+  double startTime;
+  double duration;
+  bool active;
+} fluidSources[MAX_SOURCES];
+static int currentSourceIndex = 0;
 
 // Global simulation arrays
 static float *u, *v, *u_prev, *v_prev;
@@ -207,27 +237,29 @@ void clear_prev(float *x, int n)
   }
 }
 
-double getCurrentCpuUsage() {
+double getCurrentCpuUsage()
+{
   struct rusage currentUsage;
   struct timeval currentTime;
-  
+
   getrusage(RUSAGE_SELF, &currentUsage);
   gettimeofday(&currentTime, NULL);
-  
-  long userTime = (currentUsage.ru_utime.tv_sec - lastRUsage.ru_utime.tv_sec) * 1000000 + 
-                 (currentUsage.ru_utime.tv_usec - lastRUsage.ru_utime.tv_usec);
-  long systemTime = (currentUsage.ru_stime.tv_sec - lastRUsage.ru_stime.tv_sec) * 1000000 + 
-                   (currentUsage.ru_stime.tv_usec - lastRUsage.ru_stime.tv_usec);
-  long elapsedTime = (currentTime.tv_sec - lastCpuCheck.tv_sec) * 1000000 + 
-                    (currentTime.tv_usec - lastCpuCheck.tv_usec);
-  
+
+  long userTime = (currentUsage.ru_utime.tv_sec - lastRUsage.ru_utime.tv_sec) * 1000000 +
+                  (currentUsage.ru_utime.tv_usec - lastRUsage.ru_utime.tv_usec);
+  long systemTime = (currentUsage.ru_stime.tv_sec - lastRUsage.ru_stime.tv_sec) * 1000000 +
+                    (currentUsage.ru_stime.tv_usec - lastRUsage.ru_stime.tv_usec);
+  long elapsedTime = (currentTime.tv_sec - lastCpuCheck.tv_sec) * 1000000 +
+                     (currentTime.tv_usec - lastCpuCheck.tv_usec);
+
   // Store current values for next comparison
   lastRUsage = currentUsage;
   lastCpuCheck = currentTime;
-  
+
   // Avoid division by zero
-  if (elapsedTime <= 0) return 0.0;
-  
+  if (elapsedTime <= 0)
+    return 0.0;
+
   // Calculate CPU usage as percentage (considering all threads)
   double totalCpuTime = userTime + systemTime;
   return 100.0 * totalCpuTime / (elapsedTime * omp_get_max_threads());
@@ -264,18 +296,21 @@ void vel_step(float *u, float *v, float *u0, float *v0, float visc, float dt)
 //-----------------------
 // OpenGL Callbacks
 //-----------------------
-void drawString(float x, float y, const std::string& str) {
+void drawString(float x, float y, const std::string &str)
+{
   glRasterPos2f(x, y);
-  for (char c : str) {
+  for (char c : str)
+  {
     glutBitmapCharacter(GLUT_BITMAP_9_BY_15, c);
   }
 }
 
-void controlDisplay() {
+void controlDisplay()
+{
   glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   glColor3f(0.0f, 0.0f, 0.0f);
-  
+
   std::stringstream ss;
   float y = 0.9f;
   float lineHeight = 0.05f;
@@ -287,12 +322,12 @@ void controlDisplay() {
   ss << "Diffusion Rate (D): " << std::fixed << std::setprecision(7) << diff;
   drawString(0.05f, y, ss.str());
   y -= lineHeight;
-  
+
   ss.str("");
   ss << "Viscosity (V): " << std::fixed << std::setprecision(7) << visc;
   drawString(0.05f, y, ss.str());
   y -= lineHeight;
-  
+
   ss.str("");
   ss << "Timestep (T): " << std::fixed << std::setprecision(2) << dt;
   drawString(0.05f, y, ss.str());
@@ -312,7 +347,7 @@ void controlDisplay() {
   ss << "Display Velocity (V): " << (displayVelocity ? "ON" : "OFF");
   drawString(0.05f, y, ss.str());
   y -= lineHeight * 2;
-  
+
   drawString(0.05f, y, "Controls:");
   y -= lineHeight * 1.2f;
   drawString(0.05f, y, "D/d: Increase/decrease diffusion");
@@ -336,7 +371,8 @@ void controlDisplay() {
   glutSwapBuffers();
 }
 
-void controlReshape(int w, int h) {
+void controlReshape(int w, int h)
+{
   glViewport(0, 0, w, h);
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
@@ -349,7 +385,7 @@ void display()
 {
   glClear(GL_COLOR_BUFFER_BIT);
   float h = 1.0f / N;
-  
+
   glBegin(GL_QUADS);
   for (int i = 1; i <= N; i++)
   {
@@ -368,8 +404,9 @@ void display()
     }
   }
   glEnd();
-  
-  if (displayVelocity) {
+
+  if (displayVelocity)
+  {
     glColor3f(1.0f, 0.0f, 0.0f);
     glBegin(GL_LINES);
     for (int i = 1; i <= N; i += 8)
@@ -380,9 +417,10 @@ void display()
         float y = (j - 0.5f) * h;
         float vx = u[IX(i, j)];
         float vy = v[IX(i, j)];
-        float len = sqrt(vx*vx + vy*vy);
-        
-        if (len > 0.0001f) {
+        float len = sqrt(vx * vx + vy * vy);
+
+        if (len > 0.0001f)
+        {
           float scale = 0.01f;
           glVertex2f(x, y);
           glVertex2f(x + vx * scale, y + vy * scale);
@@ -391,38 +429,40 @@ void display()
     }
     glEnd();
   }
-  
+
   // Display performance statistics
-  if (showStats) {
+  if (showStats)
+  {
     glColor3f(1.0f, 1.0f, 1.0f);
     std::stringstream ss;
     ss << std::fixed << std::setprecision(1);
-    
+
     ss << "FPS: " << averageFPS;
     drawString(0.02f, 0.97f, ss.str());
-    
+
     ss.str("");
     ss << "Threads: " << omp_get_max_threads();
     drawString(0.02f, 0.94f, ss.str());
-    
+
     ss.str("");
     ss << "CPU: " << std::setprecision(1) << cpuUsage << "%";
     drawString(0.02f, 0.91f, ss.str());
-    
+
     ss.str("");
     ss << "Grid: " << N << "x" << N;
     drawString(0.02f, 0.88f, ss.str());
   }
-  
+
   glutSwapBuffers();
 }
 
-void resetSimulation() {
-  for (int i = 0; i < size; i++) {
+void resetSimulation()
+{
+  for (int i = 0; i < size; i++)
+  {
     u[i] = v[i] = u_prev[i] = v_prev[i] = dens[i] = dens_prev[i] = 0.0f;
   }
 }
-
 
 void reshape(int w, int h)
 {
@@ -461,37 +501,71 @@ void motionFunc(int x, int y)
   mouseY = y;
 }
 
-void keyboard(unsigned char key, int x, int y) {
+void keyboard(unsigned char key, int x, int y)
+{
   const float diffStep = 0.000005f;
   const float viscStep = 0.000005f;
   const float dtStep = 0.01f;
   const float forceStep = 5.0f;
   const float velocityStep = 2.0f;
-  
-  switch(key) {
-    case 'D': diff += diffStep; break;
-    case 'd': diff = fmax(0.0f, diff - diffStep); break;
-    case 'V': visc += viscStep; break;
-    case 'v': visc = fmax(0.0f, visc - viscStep); break;
-    case 'T': dt += dtStep; break;
-    case 't': dt = fmax(0.01f, dt - dtStep); break;
-    case 'F': forceStrength += forceStep; break;
-    case 'f': forceStrength = fmax(0.0f, forceStrength - forceStep); break;
-    case 'S': velocityStrength += velocityStep; break;
-    case 's': velocityStrength = fmax(0.0f, velocityStrength - velocityStep); break;
-    case 'W': case 'w': displayVelocity = !displayVelocity; break;
-    case 'P': case 'p': showStats = !showStats; break; // Toggle statistics display
-    case 'R': case 'r': resetSimulation(); break;
-    case 'Q': case 'q': case 27:
-      glutDestroyWindow(mainWindow);
-      glutDestroyWindow(controlWindow);
-      exit(0);
-    default: break;
+
+  switch (key)
+  {
+  case 'D':
+    diff += diffStep;
+    break;
+  case 'd':
+    diff = fmax(0.0f, diff - diffStep);
+    break;
+  case 'V':
+    visc += viscStep;
+    break;
+  case 'v':
+    visc = fmax(0.0f, visc - viscStep);
+    break;
+  case 'T':
+    dt += dtStep;
+    break;
+  case 't':
+    dt = fmax(0.01f, dt - dtStep);
+    break;
+  case 'F':
+    forceStrength += forceStep;
+    break;
+  case 'f':
+    forceStrength = fmax(0.0f, forceStrength - forceStep);
+    break;
+  case 'S':
+    velocityStrength += velocityStep;
+    break;
+  case 's':
+    velocityStrength = fmax(0.0f, velocityStrength - velocityStep);
+    break;
+  case 'W':
+  case 'w':
+    displayVelocity = !displayVelocity;
+    break;
+  case 'P':
+  case 'p':
+    showStats = !showStats;
+    break; // Toggle statistics display
+  case 'R':
+  case 'r':
+    resetSimulation();
+    break;
+  case 'Q':
+  case 'q':
+  case 27:
+    glutDestroyWindow(mainWindow);
+    glutDestroyWindow(controlWindow);
+    exit(0);
+  default:
+    break;
   }
-  
+
   glutSetWindow(controlWindow);
   glutPostRedisplay();
-  
+
   glutSetWindow(mainWindow);
 }
 
@@ -500,43 +574,156 @@ void idle()
   // Calculate FPS and CPU usage
   struct timeval currentTime;
   gettimeofday(&currentTime, NULL);
-  
+
   // Initialize time values on first run
   static bool firstRun = true;
-  if (firstRun) {
+  if (firstRun)
+  {
     lastFrameTime = currentTime;
     getrusage(RUSAGE_SELF, &lastRUsage);
     lastCpuCheck = currentTime;
+
+    if (benchmarkMode)
+    {
+      benchmarkStartTime = currentTime.tv_sec + currentTime.tv_usec / 1000000.0;
+      // Initialize random number generator for benchmark mode
+      rng.seed(std::chrono::system_clock::now().time_since_epoch().count());
+      useRandomSources = true;
+
+      // Initialize all sources as inactive
+      for (int i = 0; i < MAX_SOURCES; i++)
+      {
+        fluidSources[i].active = false;
+      }
+    }
+
     firstRun = false;
   }
-  
+
   // Calculate time elapsed since last frame in seconds
-  double timeElapsed = (currentTime.tv_sec - lastFrameTime.tv_sec) + 
-                      (currentTime.tv_usec - lastFrameTime.tv_usec) / 1000000.0;
-                      
-  if (timeElapsed > 0) {
+  double timeElapsed = (currentTime.tv_sec - lastFrameTime.tv_sec) +
+                       (currentTime.tv_usec - lastFrameTime.tv_usec) / 1000000.0;
+
+  double currentTime_s = currentTime.tv_sec + currentTime.tv_usec / 1000000.0;
+
+  if (timeElapsed > 0)
+  {
     double fps = 1.0 / timeElapsed;
-    
+
     // Update FPS history
     fpsHistory.push_back(fps);
-    if (fpsHistory.size() > FPS_HISTORY_SIZE) {
+    if (fpsHistory.size() > FPS_HISTORY_SIZE)
+    {
       fpsHistory.pop_front();
     }
-    
+
     // Calculate average FPS
     averageFPS = std::accumulate(fpsHistory.begin(), fpsHistory.end(), 0.0) / fpsHistory.size();
-    
+
+    // Benchmark data collection
+    if (benchmarkMode)
+    {
+      totalFPS += fps;
+      frameCount++;
+    }
+
     // Update CPU usage (do this less frequently to reduce overhead)
     static int cpuUpdateCounter = 0;
-    if (cpuUpdateCounter++ % 10 == 0) {
+    if (cpuUpdateCounter++ % 10 == 0)
+    {
       cpuUsage = getCurrentCpuUsage();
+
+      // Benchmark CPU collection
+      if (benchmarkMode)
+      {
+        totalCPU += cpuUsage;
+        cpuReadingCount++;
+      }
+    }
+
+    // Check if benchmark duration has elapsed
+    if (benchmarkMode)
+    {
+      double currentRunTime = currentTime_s - benchmarkStartTime;
+      if (currentRunTime >= benchmarkDuration)
+      {
+        // Print benchmark results
+        double avgFps = totalFPS / frameCount;
+        double avgCpu = totalCPU / cpuReadingCount;
+        std::cout << "\nBenchmark results:" << std::endl;
+        std::cout << "Thread count: " << omp_get_max_threads() << std::endl;
+        std::cout << "Average FPS: " << avgFps << std::endl;
+        std::cout << "Average CPU: " << avgCpu << "%" << std::endl;
+        std::cout << "Total frames: " << frameCount << std::endl;
+        std::cout << "Duration: " << currentRunTime << " seconds" << std::endl;
+        exit(0);
+      }
     }
   }
-  
+
   lastFrameTime = currentTime;
 
-  if (leftButtonDown)
+  // Add random fluid sources during benchmark
+  if (useRandomSources && benchmarkMode)
   {
+    frameCounter++;
+
+    // Add new fluid sources periodically
+    if (frameCounter % sourceInterval == 0)
+    {
+      // Generate 1-3 random sources per interval
+      std::uniform_int_distribution<int> num_sources_dist(1, 3);
+      int num_sources = num_sources_dist(rng);
+
+      for (int s = 0; s < num_sources; s++)
+      {
+        // Generate random positions, density and velocity direction
+        std::uniform_int_distribution<int> pos_dist(1, N);
+        std::uniform_real_distribution<float> density_dist(50.0f, 150.0f);
+        std::uniform_real_distribution<float> vel_dist(-30.0f, 30.0f);
+
+        // Find an unused source slot or reuse the oldest one
+        int idx = currentSourceIndex;
+        currentSourceIndex = (currentSourceIndex + 1) % MAX_SOURCES;
+
+        // Configure the new source
+        fluidSources[idx].i = pos_dist(rng);
+        fluidSources[idx].j = pos_dist(rng);
+        fluidSources[idx].density = density_dist(rng);
+        fluidSources[idx].velocityX = vel_dist(rng);
+        fluidSources[idx].velocityY = vel_dist(rng);
+        fluidSources[idx].startTime = currentTime_s;
+        fluidSources[idx].duration = 2.0; // 2 seconds duration
+        fluidSources[idx].active = true;
+      }
+    }
+
+    // Process all active sources
+    for (int i = 0; i < MAX_SOURCES; i++)
+    {
+      if (fluidSources[i].active)
+      {
+        // Check if source is still within its duration
+        if (currentTime_s - fluidSources[i].startTime < fluidSources[i].duration)
+        {
+          // Apply the source
+          int idx_i = fluidSources[i].i;
+          int idx_j = fluidSources[i].j;
+          dens_prev[IX(idx_i, idx_j)] += fluidSources[i].density;
+          u_prev[IX(idx_i, idx_j)] += fluidSources[i].velocityX;
+          v_prev[IX(idx_i, idx_j)] += fluidSources[i].velocityY;
+        }
+        else
+        {
+          // Source duration expired
+          fluidSources[i].active = false;
+        }
+      }
+    }
+  }
+  else if (leftButtonDown)
+  {
+    // Existing mouse interaction code
     int i = (int)((mouseX / (float)win_x) * N + 1);
     int j = (int)(((win_y - mouseY) / (float)win_y) * N + 1);
     if (i < 1)
@@ -575,6 +762,20 @@ int main(int argc, char **argv)
     num_threads = atoi(argv[1]);
   }
 
+  // Check for benchmark flag
+  if (argc > 2 && std::string(argv[2]) == "-benchmark")
+  {
+    benchmarkMode = true;
+    std::cout << "Running in benchmark mode" << std::endl;
+
+    if (argc > 3)
+    {
+      benchmarkDuration = atoi(argv[3]);
+    }
+
+    std::cout << "Will run for " << benchmarkDuration << " seconds" << std::endl;
+  }
+
   omp_set_num_threads(num_threads);
   std::cout << "Running with " << num_threads << " threads.\n";
 
@@ -592,7 +793,7 @@ int main(int argc, char **argv)
 
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-  
+
   glutInitWindowSize(win_x, win_y);
   glutInitWindowPosition(50, 50);
   mainWindow = glutCreateWindow("2D Fluid in a Box - OpenMP Version");
@@ -603,14 +804,14 @@ int main(int argc, char **argv)
   glutMotionFunc(motionFunc);
   glutPassiveMotionFunc(motionFunc);
   glutKeyboardFunc(keyboard);
-  
+
   glutInitWindowSize(CONTROL_WIDTH, CONTROL_HEIGHT);
   glutInitWindowPosition(win_x + 70, 50);
   controlWindow = glutCreateWindow("Control Panel");
   glutDisplayFunc(controlDisplay);
   glutReshapeFunc(controlReshape);
   glutKeyboardFunc(keyboard);
-  
+
   glutMainLoop();
 
   delete[] u;

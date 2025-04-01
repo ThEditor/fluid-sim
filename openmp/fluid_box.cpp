@@ -5,6 +5,9 @@
 #include <unistd.h>
 #include <iostream>
 #include <omp.h>
+#include <sstream>
+#include <iomanip>
+#include <string>
 
 #define N 512                          // resolution
 #define IX(i, j) ((i) + (N + 2) * (j)) // 2D indexing
@@ -23,6 +26,14 @@ static float diff = 0.00001f; // diffusion rate
 static float visc = 0.00001f; // viscosity
 
 static int size = (N + 2) * (N + 2);
+
+static int controlWindow;
+static int mainWindow;
+static const int CONTROL_WIDTH = 300;
+static const int CONTROL_HEIGHT = 300;
+static bool displayVelocity = false;
+static float forceStrength = 100.0f;
+static float velocityStrength = 20.0f;
 
 // Global simulation arrays
 static float *u, *v, *u_prev, *v_prev;
@@ -214,10 +225,90 @@ void vel_step(float *u, float *v, float *u0, float *v0, float visc, float dt)
 //-----------------------
 // OpenGL Callbacks
 //-----------------------
+void drawString(float x, float y, const std::string& str) {
+  glRasterPos2f(x, y);
+  for (char c : str) {
+    glutBitmapCharacter(GLUT_BITMAP_9_BY_15, c);
+  }
+}
+
+void controlDisplay() {
+  glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glColor3f(0.0f, 0.0f, 0.0f);
+  
+  std::stringstream ss;
+  float y = 0.9f;
+  float lineHeight = 0.05f;
+
+  drawString(0.05f, y, "Simulation Parameters Control Panel");
+  y -= lineHeight * 1.5f;
+
+  ss.str("");
+  ss << "Diffusion Rate (D): " << std::fixed << std::setprecision(7) << diff;
+  drawString(0.05f, y, ss.str());
+  y -= lineHeight;
+  
+  ss.str("");
+  ss << "Viscosity (V): " << std::fixed << std::setprecision(7) << visc;
+  drawString(0.05f, y, ss.str());
+  y -= lineHeight;
+  
+  ss.str("");
+  ss << "Timestep (T): " << std::fixed << std::setprecision(2) << dt;
+  drawString(0.05f, y, ss.str());
+  y -= lineHeight;
+
+  ss.str("");
+  ss << "Force Strength (F): " << std::fixed << std::setprecision(1) << forceStrength;
+  drawString(0.05f, y, ss.str());
+  y -= lineHeight;
+
+  ss.str("");
+  ss << "Velocity Strength (S): " << std::fixed << std::setprecision(1) << velocityStrength;
+  drawString(0.05f, y, ss.str());
+  y -= lineHeight;
+
+  ss.str("");
+  ss << "Display Velocity (V): " << (displayVelocity ? "ON" : "OFF");
+  drawString(0.05f, y, ss.str());
+  y -= lineHeight * 2;
+  
+  drawString(0.05f, y, "Controls:");
+  y -= lineHeight * 1.2f;
+  drawString(0.05f, y, "D/d: Increase/decrease diffusion");
+  y -= lineHeight;
+  drawString(0.05f, y, "V/v: Increase/decrease viscosity");
+  y -= lineHeight;
+  drawString(0.05f, y, "T/t: Increase/decrease timestep");
+  y -= lineHeight;
+  drawString(0.05f, y, "F/f: Increase/decrease force strength");
+  y -= lineHeight;
+  drawString(0.05f, y, "S/s: Increase/decrease velocity strength");
+  y -= lineHeight;
+  drawString(0.05f, y, "W: Toggle velocity visualization");
+  y -= lineHeight;
+  drawString(0.05f, y, "R: Reset simulation");
+  y -= lineHeight;
+  drawString(0.05f, y, "Q: Quit");
+
+  glutSwapBuffers();
+}
+
+void controlReshape(int w, int h) {
+  glViewport(0, 0, w, h);
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0.0, 1.0, 0.0, 1.0, -1.0, 1.0);
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+}
+
 void display()
 {
   glClear(GL_COLOR_BUFFER_BIT);
   float h = 1.0f / N;
+  
   glBegin(GL_QUADS);
   for (int i = 1; i <= N; i++)
   {
@@ -236,8 +327,39 @@ void display()
     }
   }
   glEnd();
+  
+  if (displayVelocity) {
+    glColor3f(1.0f, 0.0f, 0.0f);
+    glBegin(GL_LINES);
+    for (int i = 1; i <= N; i += 8)
+    {
+      for (int j = 1; j <= N; j += 8)
+      {
+        float x = (i - 0.5f) * h;
+        float y = (j - 0.5f) * h;
+        float vx = u[IX(i, j)];
+        float vy = v[IX(i, j)];
+        float len = sqrt(vx*vx + vy*vy);
+        
+        if (len > 0.0001f) {
+          float scale = 0.01f;
+          glVertex2f(x, y);
+          glVertex2f(x + vx * scale, y + vy * scale);
+        }
+      }
+    }
+    glEnd();
+  }
+  
   glutSwapBuffers();
 }
+
+void resetSimulation() {
+  for (int i = 0; i < size; i++) {
+    u[i] = v[i] = u_prev[i] = v_prev[i] = dens[i] = dens_prev[i] = 0.0f;
+  }
+}
+
 
 void reshape(int w, int h)
 {
@@ -276,10 +398,41 @@ void motionFunc(int x, int y)
   mouseY = y;
 }
 
-// The idle callback runs one simulation time step and then requests a redraw.
+void keyboard(unsigned char key, int x, int y) {
+  const float diffStep = 0.000005f;
+  const float viscStep = 0.000005f;
+  const float dtStep = 0.01f;
+  const float forceStep = 5.0f;
+  const float velocityStep = 2.0f;
+  
+  switch(key) {
+    case 'D': diff += diffStep; break;
+    case 'd': diff = fmax(0.0f, diff - diffStep); break;
+    case 'V': visc += viscStep; break;
+    case 'v': visc = fmax(0.0f, visc - viscStep); break;
+    case 'T': dt += dtStep; break;
+    case 't': dt = fmax(0.01f, dt - dtStep); break;
+    case 'F': forceStrength += forceStep; break;
+    case 'f': forceStrength = fmax(0.0f, forceStrength - forceStep); break;
+    case 'S': velocityStrength += velocityStep; break;
+    case 's': velocityStrength = fmax(0.0f, velocityStrength - velocityStep); break;
+    case 'W': case 'w': displayVelocity = !displayVelocity; break;
+    case 'R': case 'r': resetSimulation(); break;
+    case 'Q': case 'q': case 27:
+      glutDestroyWindow(mainWindow);
+      glutDestroyWindow(controlWindow);
+      exit(0);
+    default: break;
+  }
+  
+  glutSetWindow(controlWindow);
+  glutPostRedisplay();
+  
+  glutSetWindow(mainWindow);
+}
+
 void idle()
 {
-  // If mouse impulse is active, add a source at the corresponding grid cell.
   if (leftButtonDown)
   {
     int i = (int)((mouseX / (float)win_x) * N + 1);
@@ -292,21 +445,20 @@ void idle()
       j = 1;
     if (j > N)
       j = N;
-    dens_prev[IX(i, j)] += 100.0f;
-    v_prev[IX(i, j)] += -20.0f;
+    dens_prev[IX(i, j)] += forceStrength;
+    v_prev[IX(i, j)] += -velocityStrength;
   }
 
-  // Update velocity and density fields.
   vel_step(u, v, u_prev, v_prev, visc, dt);
   dens_step(dens, dens_prev, u, v, diff, dt);
 
-  // Clear the source arrays.
   clear_prev(dens_prev, size);
   clear_prev(u_prev, size);
   clear_prev(v_prev, size);
 
+  glutSetWindow(mainWindow);
   glutPostRedisplay();
-  usleep(10000); // 10ms delay for visualization purposes
+  usleep(10000);
 }
 
 //-----------------------
@@ -338,15 +490,25 @@ int main(int argc, char **argv)
 
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+  
   glutInitWindowSize(win_x, win_y);
-  glutCreateWindow("2D Fluid in a Box - OpenMP Version");
+  glutInitWindowPosition(50, 50);
+  mainWindow = glutCreateWindow("2D Fluid in a Box - OpenMP Version");
   glutDisplayFunc(display);
   glutReshapeFunc(reshape);
   glutIdleFunc(idle);
   glutMouseFunc(mouseFunc);
   glutMotionFunc(motionFunc);
   glutPassiveMotionFunc(motionFunc);
-
+  glutKeyboardFunc(keyboard);
+  
+  glutInitWindowSize(CONTROL_WIDTH, CONTROL_HEIGHT);
+  glutInitWindowPosition(win_x + 70, 50);
+  controlWindow = glutCreateWindow("Control Panel");
+  glutDisplayFunc(controlDisplay);
+  glutReshapeFunc(controlReshape);
+  glutKeyboardFunc(keyboard);
+  
   glutMainLoop();
 
   delete[] u;

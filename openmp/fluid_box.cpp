@@ -8,6 +8,10 @@
 #include <sstream>
 #include <iomanip>
 #include <string>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <deque>
+#include <numeric>
 
 #define N 512                          // resolution
 #define IX(i, j) ((i) + (N + 2) * (j)) // 2D indexing
@@ -34,6 +38,15 @@ static const int CONTROL_HEIGHT = 300;
 static bool displayVelocity = false;
 static float forceStrength = 100.0f;
 static float velocityStrength = 20.0f;
+
+static bool showStats = true;
+static std::deque<double> fpsHistory;
+static const int FPS_HISTORY_SIZE = 30; // Store last 30 frames for averaging
+static struct timeval lastFrameTime;
+static double averageFPS = 0.0;
+static double cpuUsage = 0.0;
+static struct rusage lastRUsage;
+static struct timeval lastCpuCheck;
 
 // Global simulation arrays
 static float *u, *v, *u_prev, *v_prev;
@@ -194,6 +207,32 @@ void clear_prev(float *x, int n)
   }
 }
 
+double getCurrentCpuUsage() {
+  struct rusage currentUsage;
+  struct timeval currentTime;
+  
+  getrusage(RUSAGE_SELF, &currentUsage);
+  gettimeofday(&currentTime, NULL);
+  
+  long userTime = (currentUsage.ru_utime.tv_sec - lastRUsage.ru_utime.tv_sec) * 1000000 + 
+                 (currentUsage.ru_utime.tv_usec - lastRUsage.ru_utime.tv_usec);
+  long systemTime = (currentUsage.ru_stime.tv_sec - lastRUsage.ru_stime.tv_sec) * 1000000 + 
+                   (currentUsage.ru_stime.tv_usec - lastRUsage.ru_stime.tv_usec);
+  long elapsedTime = (currentTime.tv_sec - lastCpuCheck.tv_sec) * 1000000 + 
+                    (currentTime.tv_usec - lastCpuCheck.tv_usec);
+  
+  // Store current values for next comparison
+  lastRUsage = currentUsage;
+  lastCpuCheck = currentTime;
+  
+  // Avoid division by zero
+  if (elapsedTime <= 0) return 0.0;
+  
+  // Calculate CPU usage as percentage (considering all threads)
+  double totalCpuTime = userTime + systemTime;
+  return 100.0 * totalCpuTime / (elapsedTime * omp_get_max_threads());
+}
+
 //-----------------------
 // Simulation Steps
 //-----------------------
@@ -291,6 +330,8 @@ void controlDisplay() {
   drawString(0.05f, y, "R: Reset simulation");
   y -= lineHeight;
   drawString(0.05f, y, "Q: Quit");
+  y -= lineHeight;
+  drawString(0.05f, y, "P: Toggle performance statistics");
 
   glutSwapBuffers();
 }
@@ -349,6 +390,28 @@ void display()
       }
     }
     glEnd();
+  }
+  
+  // Display performance statistics
+  if (showStats) {
+    glColor3f(1.0f, 1.0f, 1.0f);
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(1);
+    
+    ss << "FPS: " << averageFPS;
+    drawString(0.02f, 0.97f, ss.str());
+    
+    ss.str("");
+    ss << "Threads: " << omp_get_max_threads();
+    drawString(0.02f, 0.94f, ss.str());
+    
+    ss.str("");
+    ss << "CPU: " << std::setprecision(1) << cpuUsage << "%";
+    drawString(0.02f, 0.91f, ss.str());
+    
+    ss.str("");
+    ss << "Grid: " << N << "x" << N;
+    drawString(0.02f, 0.88f, ss.str());
   }
   
   glutSwapBuffers();
@@ -417,6 +480,7 @@ void keyboard(unsigned char key, int x, int y) {
     case 'S': velocityStrength += velocityStep; break;
     case 's': velocityStrength = fmax(0.0f, velocityStrength - velocityStep); break;
     case 'W': case 'w': displayVelocity = !displayVelocity; break;
+    case 'P': case 'p': showStats = !showStats; break; // Toggle statistics display
     case 'R': case 'r': resetSimulation(); break;
     case 'Q': case 'q': case 27:
       glutDestroyWindow(mainWindow);
@@ -433,6 +497,44 @@ void keyboard(unsigned char key, int x, int y) {
 
 void idle()
 {
+  // Calculate FPS and CPU usage
+  struct timeval currentTime;
+  gettimeofday(&currentTime, NULL);
+  
+  // Initialize time values on first run
+  static bool firstRun = true;
+  if (firstRun) {
+    lastFrameTime = currentTime;
+    getrusage(RUSAGE_SELF, &lastRUsage);
+    lastCpuCheck = currentTime;
+    firstRun = false;
+  }
+  
+  // Calculate time elapsed since last frame in seconds
+  double timeElapsed = (currentTime.tv_sec - lastFrameTime.tv_sec) + 
+                      (currentTime.tv_usec - lastFrameTime.tv_usec) / 1000000.0;
+                      
+  if (timeElapsed > 0) {
+    double fps = 1.0 / timeElapsed;
+    
+    // Update FPS history
+    fpsHistory.push_back(fps);
+    if (fpsHistory.size() > FPS_HISTORY_SIZE) {
+      fpsHistory.pop_front();
+    }
+    
+    // Calculate average FPS
+    averageFPS = std::accumulate(fpsHistory.begin(), fpsHistory.end(), 0.0) / fpsHistory.size();
+    
+    // Update CPU usage (do this less frequently to reduce overhead)
+    static int cpuUpdateCounter = 0;
+    if (cpuUpdateCounter++ % 10 == 0) {
+      cpuUsage = getCurrentCpuUsage();
+    }
+  }
+  
+  lastFrameTime = currentTime;
+
   if (leftButtonDown)
   {
     int i = (int)((mouseX / (float)win_x) * N + 1);
